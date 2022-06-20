@@ -3,6 +3,8 @@ defmodule Monparsing do
   See http://www.cs.nott.ac.uk/~pszgmh/monparsing.pdf for more informations
   """
 
+  require Mparser
+
   def trace do
     :dbg.start()
     :dbg.tracer()
@@ -39,8 +41,8 @@ defmodule Monparsing do
   @spec seq(parser(a), parser(b)) :: parser({a, b}) when a: any, b: any
   def seq(p, q), do: Mparser.mk(fn inp ->
     for(
-      {v, inp1} <- p.parser.(inp),
-      {w, inp2} <- q.parser.(inp1),
+      {v, inp1} <- Mparser.run(p, inp),
+      {w, inp2} <- Mparser.run(q, inp1),
       do: {{v, w}, inp2}
     )
   end)
@@ -61,6 +63,9 @@ defmodule Monparsing do
       end)
     end)
   end
+
+  @spec seq_bis(parser(a), parser(b)) :: parser({a, b}) when a: any, b: any
+  def seq_ter(p, q), do: for(v <- p, w <- q, do: {v, w}, into: zero())
 
   @spec sat((char -> boolean)) :: parser(char)
   def sat(p), do: item() |> bind(fn x ->
@@ -324,4 +329,103 @@ defmodule Monparsing do
   def factor_4, do: nat_4() |> plus(Mparser.mk(fn inp -> bracket(char(?(), expr_4(), char(?))) |> Mparser.run(inp) end))
   def addop_4, do: ops([{char(?+), &+/2}, {char(?-), &-/2}])
   def expop_4, do: ops([{char(?^), &Integer.pow/2}])
+
+  @spec chainl(parser(a), parser(((a, a) -> a)), a) :: parser(a) when a: any
+  @spec chainr(parser(a), parser(((a, a) -> a)), a) :: parser(a) when a: any
+
+  def chainl(p, op, v), do: p |> chainl1(op) |> plus(result(v))
+  def chainr(p, op, v), do: p |> chainr1(op) |> plus(result(v))
+
+  # 5.1 Left factoring
+
+  @spec eval :: parser(integer)
+  def eval do
+    add = for x <- nat(), _ <- char(?+), y <- nat(), do: x + y, into: zero()
+    sub = for x <- nat(), _ <- char(?-), y <- nat(), do: x - y, into: zero()
+    add |> plus(sub)
+  end
+
+  @spec eval_bis :: parser(integer)
+  def eval_bis do
+    add = fn x -> for _ <- char(?+), y <- nat(), do: x + y, into: zero() end
+    sub = fn x -> for _ <- char(?-), y <- nat(), do: x - y, into: zero() end
+    for x <- nat(), v <- plus(add.(x), sub.(x)), do: v, into: zero()
+  end
+
+  @spec eval_ter :: parser(integer)
+  def eval_ter do
+    for(
+      x <- nat(),
+      f <- ops([{char(?+), &+/2}, {char(?-), &-/2}]),
+      y <- nat(),
+      do: f.(x, y),
+      into: zero()
+    )
+  end
+
+  # 5.3 Limiting the number of results
+
+  # Not as useful as in a lazy lang,
+  # could move parser to use a stream instead of a list in its type.
+  @spec first(parser(a)) :: parser(a) when a: any
+  def first(p) do
+    Mparser.mk(fn inp ->
+      case Mparser.run(p, inp) do
+        [] -> []
+        [x | _] -> [x]
+      end
+    end)
+  end
+
+  @spec plusf_(parser(a), parser(a)) :: parser(a) when a: any
+  def plusf_(p, q), do: first(plus(p, q))
+
+  @spec plusf(parser(a), parser(a)) :: parser(a) when a: any
+  def plusf(p, q) do
+    first(Mparser.mk(fn inp ->
+      case Mparser.run(p, inp) do
+        [] -> Mparser.run(q, inp)
+        [_ | _] = xs -> xs
+      end
+    end))
+  end
+
+  # 6.1 White-space, comments, and keywords
+
+  @spec spaces :: parser({})
+  def spaces, do: for(_ <- many1(sat(fn x -> x in [?\s, ?\n, ?\t] end)), do: {}, into: zero())
+
+  @spec comment :: parser({})
+  def comment, do: for(_ <- string("--"), _ <- many(sat(fn x -> x != ?\n end)), do: {}, into: zero())
+
+  @spec comment_ml :: parser({})
+  def comment_ml do
+    inner =
+      Mparser.delay(comment_ml())
+      |> plus(item())
+      |> many()
+
+    first(for _ <- bracket(string("{-"), inner, string("-}")), do: {}, into: zero())
+  end
+
+  @spec junk :: parser({})
+  def junk, do: for(_ <- many(spaces() |> plusf(comment())), do: {}, into: zero())
+
+  @spec parse(parser(a)) :: parser(a) when a: any
+  def parse(p), do: for(_ <- junk(), v <- p, do: v, into: zero())
+
+  @spec token(parser(a)) :: parser(a) when a: any
+  def token(p), do: for(v <- p, _ <- junk(), do: v, into: zero())
+
+  @spec natural :: parser(integer)
+  def natural, do: token(nat())
+
+  @spec integer :: parser(integer)
+  def integer, do: token(int())
+
+  @spec symbol(String.t) :: parser(String.t)
+  def symbol(bin), do: token(string(bin))
+
+  @spec identifier([String.t]) :: parser(String.t)
+  def identifier(ks), do: token(for x <- ident(), x not in ks, do: x, into: zero())
 end

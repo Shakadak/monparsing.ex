@@ -9,6 +9,12 @@ defmodule Mparser do
   @spec run(Monparsing.parser(a), String.t) :: [{a, String.t}] when a: any
   def run(%__MODULE__{parser: f}, x), do: f.(x)
 
+  defmacro delay(body) do
+    quote do
+      Mparser.mk(fn inp -> Mparser.run(unquote(body), inp) end)
+    end
+  end
+
   def inspect_fun(fun) do
     fun_info = :erlang.fun_info(fun)
     #_ = IO.inspect(fun_info)
